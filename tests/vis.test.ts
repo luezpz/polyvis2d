@@ -46,9 +46,41 @@ describe("portals", () => {
 describe("PVS", () => {
   const leafAt = (r: ReturnType<typeof compileLevel>, x: number, y: number) => locateLeaf(r.tree, { x, y });
 
-  it("two rooms joined by a doorway see each other", () => {
-    const r = compileLevel(SAMPLE_LEVELS.find((s) => s.name === "Two rooms")!.create());
+  it("two rooms joined by a doorway see each other (unrefined cells)", () => {
+    const r = compileLevel(SAMPLE_LEVELS.find((s) => s.name === "Two rooms")!.create(), { bsp: { cornerSplits: false } });
     for (const a of emptyLeaves(r)) for (const b of emptyLeaves(r)) expect(r.pvs[a].has(b)).toBe(true);
+  });
+
+  it("corner splits cull cells hidden behind a door jamb", () => {
+    const r = compileLevel(SAMPLE_LEVELS.find((s) => s.name === "Two rooms")!.create());
+    const doorway = leafAt(r, 9, 4);
+    for (const b of emptyLeaves(r)) expect(r.pvs[doorway].has(b)).toBe(true);
+    // With the jamb extensions some cells of one room are hidden from cells of the other.
+    const leaves = emptyLeaves(r);
+    expect(leaves.some((a) => leaves.some((b) => !r.pvs[a].has(b)))).toBe(true);
+    expect(r.summary.averageVisibleFraction).toBeLessThan(compileLevel(SAMPLE_LEVELS.find((s) => s.name === "Two rooms")!.create(), { bsp: { cornerSplits: false } }).summary.averageVisibleFraction);
+  });
+
+  it("is never stricter than true line of sight with refinement options", () => {
+    const optionSets = [{ cornerSplits: false }, { minCellSize: 0 }, { maxCellSize: 3 }, { maxCellSize: 2, minCellSize: 1.5 }];
+    const rand = rng(99);
+    let checked = 0;
+    for (const bsp of optionSets) {
+      for (const level of [SAMPLE_LEVELS[0].create(), randomLevel(7, 8), randomLevel(21, 8)]) {
+        const r = compileLevel(level, { bsp });
+        const leaves = emptyLeaves(r);
+        for (let k = 0; k < 300; k++) {
+          const a = leaves[Math.floor(rand() * leaves.length)];
+          const b = leaves[Math.floor(rand() * leaves.length)];
+          const p = randomPointInLeaf(r, a, rand);
+          const q = randomPointInLeaf(r, b, rand);
+          if (!p || !q || !lineOfSight(r.walls, p, q)) continue;
+          checked++;
+          expect(r.pvs[a].has(b), `${JSON.stringify(bsp)}: leaf ${a} should see leaf ${b}`).toBe(true);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(500);
   });
 
   it("culls the far end of a zigzag corridor", () => {

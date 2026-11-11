@@ -4,7 +4,7 @@
  * refreshes the parts that depend on state.
  */
 
-import { type BrushKind, type CompileOptions, type CompileResult, type PvsSymmetry, SAMPLE_LEVELS, locateLeaf } from "../../core";
+import { type BrushKind, type CompileOptions, type CompileResult, type PvsSymmetry, DEFAULT_BSP_OPTIONS, SAMPLE_LEVELS, locateLeaf } from "../../core";
 import type { EditorModel } from "../editor/model";
 import { type Layers, LAYER_LABELS, type ViewState } from "../editor/viewState";
 import type { Tool, ToolId } from "../editor/tools/tool";
@@ -96,8 +96,13 @@ export class Panel {
     const symmetry = h("select", { onchange: (e: Event) => host.setOptions({ symmetry: (e.target as HTMLSelectElement).value as PvsSymmetry }) },
       ...(["none", "intersect", "union"] as const).map((s) => h("option", { value: s, selected: opts.symmetry === s }, s)));
     const compiler = h("div", { class: "stack" },
-      numberField("BSP split weight", opts.bsp.splitWeight ?? 8, (v) => host.setOptions({ bsp: { ...host.options.bsp, splitWeight: v } })),
-      numberField("BSP balance weight", opts.bsp.balanceWeight ?? 1, (v) => host.setOptions({ bsp: { ...host.options.bsp, balanceWeight: v } })),
+      numberField("BSP split weight", opts.bsp.splitWeight ?? DEFAULT_BSP_OPTIONS.splitWeight, (v) => host.setOptions({ bsp: { ...host.options.bsp, splitWeight: v } })),
+      numberField("BSP balance weight", opts.bsp.balanceWeight ?? DEFAULT_BSP_OPTIONS.balanceWeight, (v) => host.setOptions({ bsp: { ...host.options.bsp, balanceWeight: v } })),
+      checkbox("Corner splits (extend walls into touching cells)", opts.bsp.cornerSplits ?? DEFAULT_BSP_OPTIONS.cornerSplits, (v) => host.setOptions({ bsp: { ...host.options.bsp, cornerSplits: v } })),
+      numberField("Min cell size", opts.bsp.minCellSize ?? DEFAULT_BSP_OPTIONS.minCellSize, (v) => host.setOptions({ bsp: { ...host.options.bsp, minCellSize: v } }),
+        "Refinement splits never create cells thinner than this (0 = no limit)"),
+      numberField("Max cell size (0 = off)", opts.bsp.maxCellSize ?? DEFAULT_BSP_OPTIONS.maxCellSize, (v) => host.setOptions({ bsp: { ...host.options.bsp, maxCellSize: v } }),
+        "Empty cells wider or taller than this are halved"),
       checkbox("Clip source by reverse antipenumbra", opts.flow.clipSource ?? true, (v) => host.setOptions({ flow: { ...host.options.flow, clipSource: v } })),
       h("label", { class: "field" }, h("span", {}, "PVS symmetry"), symmetry),
     );
@@ -166,7 +171,7 @@ export class Panel {
       kv("Walls", String(r.walls.length)),
       kv("BSP nodes / depth", `${r.bspStats.nodeCount} / ${r.bspStats.maxDepth}`),
       kv("Leaves (empty / solid)", `${r.summary.emptyLeafCount} / ${r.bspStats.solidLeafCount}`),
-      kv("Wall splits", String(r.bspStats.splitCount)),
+      kv("Wall splits / refine splits", `${r.bspStats.splitCount} / ${r.bspStats.refineSplitCount}`),
       kv("Portals (directed)", String(r.graph.portals.length)),
       kv("Avg might-see → flow", `${r.summary.averageMightSee.toFixed(1)} → ${r.summary.averagePortalVis.toFixed(1)}`),
       kv("Avg visible leaves", `${r.summary.averageVisibleLeaves.toFixed(1)} (${(r.summary.averageVisibleFraction * 100).toFixed(0)}%)`),
@@ -222,7 +227,7 @@ function checkbox(label: string, checked: boolean, onChange: (v: boolean) => voi
   return h("label", { class: "check" }, input, label);
 }
 
-function numberField(label: string, value: number, onChange: (v: number) => void): HTMLElement {
+function numberField(label: string, value: number, onChange: (v: number) => void, title?: string): HTMLElement {
   const input = h("input", {
     type: "number", min: 0, step: 0.5, value,
     onchange: (e: Event) => {
@@ -230,5 +235,5 @@ function numberField(label: string, value: number, onChange: (v: number) => void
       if (Number.isFinite(v) && v >= 0) onChange(v);
     },
   });
-  return h("label", { class: "field" }, h("span", {}, label), input);
+  return h("label", { class: "field", ...(title ? { title } : {}) }, h("span", {}, label), input);
 }

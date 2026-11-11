@@ -13,6 +13,9 @@
  * 4. Recurse. An empty front list yields an *empty* leaf (we are in front of
  *    every wall); an empty back list yields a *solid* leaf.
  *
+ * 5. Optionally refine empty leaves with extra non-wall splits (corner
+ *    extensions, cell size limits) — see `refine.ts`.
+ *
  * While recursing, each node carries its convex region (the bounding box
  * clipped by all ancestor planes); leaves keep theirs. Region edges are tagged
  * with the plane that produced them so portals can be found exactly later.
@@ -24,9 +27,10 @@ import {
   aabbFromPoints, expandAabb, polygonFromAabb, segmentLength, MIN_LENGTH,
 } from "../math";
 import type { Wall } from "../csg";
+import { type RefineOptions, chooseRefineSplit, refinementEnabled, wallVertices } from "./refine";
 import { type BspLeaf, type BspNode, type BspStats, type BspTree, type ChildRef, type LeafContents, BOUNDS_TAG, leafRef } from "./types";
 
-export interface BspBuildOptions {
+export interface BspBuildOptions extends RefineOptions {
   /** Cost of each wall split when scoring a candidate splitter. */
   readonly splitWeight: number;
   /** Cost of front/back imbalance (|front − back|) when scoring a splitter. */
@@ -39,6 +43,9 @@ export const DEFAULT_BSP_OPTIONS: BspBuildOptions = Object.freeze({
   splitWeight: 8,
   balanceWeight: 1,
   boundsMargin: 4,
+  cornerSplits: true,
+  minCellSize: 0.5,
+  maxCellSize: 0,
 });
 
 interface Fragment {
@@ -69,12 +76,28 @@ export function buildBsp(walls: readonly Wall[], options: Partial<BspBuildOption
   const nodes: BspNode[] = [];
   const leaves: BspLeaf[] = [];
   let splitCount = 0;
+  let refineSplitCount = 0;
+  const vertices = refinementEnabled(opts) ? wallVertices(walls) : [];
   let maxDepth = 0;
 
   const addLeaf = (contents: LeafContents, region: ConvexPolygon | null, depth: number): ChildRef => {
     leaves.push({ contents, region, depth });
     maxDepth = Math.max(maxDepth, depth);
     return leafRef(leaves.length - 1);
+  };
+
+  /** Empty space: either refine it with extra splits or close it off as an empty leaf. */
+  const buildEmpty = (region: ConvexPolygon | null, depth: number): ChildRef => {
+    const line = region && refinementEnabled(opts) ? chooseRefineSplit(region, vertices, opts) : null;
+    if (!line || !region) return addLeaf("empty", region, depth);
+    const planeIndex = internPlane(planes, line);
+    refineSplitCount++;
+    const nodeIndex = nodes.length;
+    nodes.push(null as unknown as BspNode);
+    const front = buildEmpty(clipPolygon(region, line, planeIndex), depth + 1);
+    const back = buildEmpty(clipPolygon(region, flipLine(line), planeIndex), depth + 1);
+    nodes[nodeIndex] = { plane: planeIndex, front, back, region };
+    return nodeIndex;
   };
 
   const build = (frags: readonly Fragment[], region: ConvexPolygon | null, depth: number): ChildRef => {
@@ -88,7 +111,7 @@ export function buildBsp(walls: readonly Wall[], options: Partial<BspBuildOption
     nodes.push(null as unknown as BspNode);
     const frontRegion = region && clipPolygon(region, line, planeIndex);
     const backRegion = region && clipPolygon(region, flipLine(line), planeIndex);
-    const front = part.front.length > 0 ? build(part.front, frontRegion, depth + 1) : addLeaf("empty", frontRegion, depth + 1);
+    const front = part.front.length > 0 ? build(part.front, frontRegion, depth + 1) : buildEmpty(frontRegion, depth + 1);
     const back = part.back.length > 0 ? build(part.back, backRegion, depth + 1) : addLeaf("solid", backRegion, depth + 1);
     nodes[nodeIndex] = { plane: planeIndex, front, back, region };
     return nodeIndex;
@@ -107,6 +130,7 @@ export function buildBsp(walls: readonly Wall[], options: Partial<BspBuildOption
       solidLeafCount: leaves.length - emptyLeafCount,
       maxDepth,
       splitCount,
+      refineSplitCount,
     },
   };
 }

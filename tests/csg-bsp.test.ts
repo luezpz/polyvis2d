@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWalls, buildBsp, locateLeaf, makeEmptySpaceTest, segmentLength, SAMPLE_LEVELS,
-  type Wall,
+  aabbFromPoints, classifyPoints, convexContains, Side, type Wall,
 } from "../src/core";
 import { boxLevel, randomLevel, rng } from "./helpers";
 
@@ -61,7 +61,7 @@ describe("BSP", () => {
   it("classifies space exactly like the CSG", () => {
     for (const level of [...SAMPLE_LEVELS.map((s) => s.create()), randomLevel(3), randomLevel(7)]) {
       const walls = buildWalls(level.brushes);
-      const { tree } = buildBsp(walls);
+      const { tree } = buildBsp(walls, { maxCellSize: 3 });
       const isEmpty = makeEmptySpaceTest(level.brushes);
       const r = rng(42);
       const { min, max } = tree.bounds;
@@ -75,15 +75,17 @@ describe("BSP", () => {
 
   it("leaf regions tile the bounding box", () => {
     const level = SAMPLE_LEVELS[0].create();
-    const { tree } = buildBsp(buildWalls(level.brushes));
-    const area = tree.leaves.reduce((s, l) => s + (l.region ? polygonArea(l.region.vertices) : 0), 0);
-    const { min, max } = tree.bounds;
-    expect(area).toBeCloseTo((max.x - min.x) * (max.y - min.y), 3);
+    for (const options of [{ cornerSplits: false }, {}, { maxCellSize: 2 }]) {
+      const { tree } = buildBsp(buildWalls(level.brushes), options);
+      const area = tree.leaves.reduce((s, l) => s + (l.region ? polygonArea(l.region.vertices) : 0), 0);
+      const { min, max } = tree.bounds;
+      expect(area).toBeCloseTo((max.x - min.x) * (max.y - min.y), 3);
+    }
   });
 
   it("never splits twice by the same plane along a root-to-leaf path (coplanar walls are consumed)", () => {
     for (const level of [...SAMPLE_LEVELS.map((s) => s.create()), randomLevel(5), randomLevel(9)]) {
-      const { tree } = buildBsp(buildWalls(level.brushes));
+      const { tree } = buildBsp(buildWalls(level.brushes), { maxCellSize: 3 });
       const walk = (ref: number, seen: Set<number>): void => {
         if (ref < 0) return;
         const node = tree.nodes[ref];
@@ -93,6 +95,69 @@ describe("BSP", () => {
         walk(node.back, next);
       };
       walk(tree.root, new Set());
+    }
+  });
+});
+
+describe("BSP refinement", () => {
+  const levels = () => [...SAMPLE_LEVELS.map((s) => s.create()), randomLevel(3), randomLevel(11)];
+
+  it("corner splits: no wall touching an empty leaf extends through it", () => {
+    for (const level of levels()) {
+      const walls = buildWalls(level.brushes);
+      const { tree, stats } = buildBsp(walls, { cornerSplits: true, minCellSize: 0 });
+      expect(stats.refineSplitCount).toBeGreaterThan(0);
+      for (const leaf of tree.leaves) {
+        if (leaf.contents !== "empty" || !leaf.region) continue;
+        for (const w of walls) {
+          for (const p of [w.seg.a, w.seg.b]) {
+            if (!convexContains(leaf.region.vertices, p)) continue;
+            // Tolerance a bit above PLANE_EPSILON: a vertex grazing the line by PROBE_OFFSET is not a real split.
+            expect(classifyPoints(w.line, leaf.region.vertices, 1e-3)).not.toBe(Side.Spanning);
+          }
+        }
+      }
+    }
+  });
+
+  it("corner splits add cells; disabling them restores the plain solid-leaf tree", () => {
+    for (const level of levels()) {
+      const walls = buildWalls(level.brushes);
+      const plain = buildBsp(walls, { cornerSplits: false }).stats;
+      const refined = buildBsp(walls, { cornerSplits: true }).stats;
+      expect(plain.refineSplitCount).toBe(0);
+      expect(refined.emptyLeafCount).toBeGreaterThanOrEqual(plain.emptyLeafCount);
+      expect(refined.solidLeafCount).toBe(plain.solidLeafCount);
+      expect(refined.splitCount).toBe(plain.splitCount);
+    }
+  });
+
+  it("max cell size bounds every empty leaf", () => {
+    for (const max of [1, 2.5, 6]) {
+      for (const level of levels()) {
+        const { tree } = buildBsp(buildWalls(level.brushes), { cornerSplits: false, minCellSize: 0, maxCellSize: max });
+        for (const leaf of tree.leaves) {
+          if (leaf.contents !== "empty" || !leaf.region) continue;
+          const b = aabbFromPoints(leaf.region.vertices)!;
+          expect(Math.max(b.max.x - b.min.x, b.max.y - b.min.y)).toBeLessThanOrEqual(max + 1e-6);
+        }
+      }
+    }
+  });
+
+  it("min cell size prevents refinement slivers", () => {
+    const min = 1.5;
+    for (const level of levels()) {
+      const { tree } = buildBsp(buildWalls(level.brushes), { cornerSplits: true, minCellSize: min, maxCellSize: 2 });
+      // Every refinement node splits its region into two parts at least `min` thick along its normal.
+      for (const node of tree.nodes) {
+        const children = [node.front, node.back];
+        if (!children.every((c) => c < 0 && tree.leaves[~c].contents === "empty") || !node.region) continue;
+        const line = tree.planes[node.plane];
+        const d = node.region.vertices.map((v) => line.n.x * v.x + line.n.y * v.y - line.d);
+        expect(Math.max(...d)).toBeGreaterThanOrEqual(min - 1e-6);
+        expect(-Math.min(...d)).toBeGreaterThanOrEqual(min - 1e-6);
+      }
     }
   });
 });

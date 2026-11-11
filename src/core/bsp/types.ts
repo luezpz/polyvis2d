@@ -68,4 +68,6 @@ export interface BspStats {
   readonly maxDepth: number;
   /** Number of wall fragments created by splitting. */
   readonly splitCount: number;
+  /** Number of extra empty-leaf splits (corner extensions and cell size limits). */
+  readonly refineSplitCount: number;
 }

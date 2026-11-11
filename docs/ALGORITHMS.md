@@ -44,6 +44,23 @@ Recursive build over wall fragments:
   coplanar fragments go back; spanning ones are split.
 - No fragments left in front → **empty** leaf. None left behind → **solid** leaf.
 
+**Empty-leaf refinement** (`bsp/refine.ts`, all in `BspBuildOptions`). A plain solid-leaf BSP
+lets one big cell wrap around a convex solid corner (pillar, door jamb, inner corner of an L),
+so its PVS row is everything visible from *either* side. Instead of closing an empty region as a
+leaf straight away, the builder keeps splitting it:
+
+- `cornerSplits` — any wall whose endpoint touches the region and whose line passes through its
+  interior (i.e. the wall's extension past the corner) is a candidate; the most balanced one
+  wins. These lines are where the view around a corner changes, so cells bounded by them get
+  much tighter PVS rows.
+- `maxCellSize` — regions wider/taller than this are halved by an axis-aligned line
+  (`0` = off), like qbsp's block grid.
+- `minCellSize` — refinement splits that would leave a side thinner than this along the split
+  normal are rejected (prevents slivers). Wall splits are never affected.
+
+Refinement only subdivides empty space, so leaf contents and conservativeness are unchanged. More
+cells mean more portals, so flow time grows roughly with the cell count.
+
 Each node carries its convex region (the bounding box, expanded by `boundsMargin`, clipped by all
 ancestor planes); leaves keep theirs. The bounding box keeps regions finite even when the level
 leaks, as suggested in the design brief.
